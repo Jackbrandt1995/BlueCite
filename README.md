@@ -1,3 +1,1 @@
-"# BlueCite" 
-"# BlueCite" 
-"# BlueCite" 
+BlueCite
