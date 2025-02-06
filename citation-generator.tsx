@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useToast } from "@/components/ui/use-toast"
@@ -29,134 +28,154 @@ import {
   CourtDocumentForm,
   RuleForm,
 } from "./citation-forms"
-import { signUp, signIn, signOut, getCurrentUser, supabase } from "./auth"
-import {
-  createProject,
-  getProjects,
-  createCitation,
-  getCitations,
-  type Project,
-  type Citation,
-} from "./project-manager"
+
+interface Project {
+  id: string
+  name: string
+  citations: Citation[]
+}
+
+interface Citation {
+  id: string
+  type: string
+  details: any
+  full: string
+  short: {
+    regular: string
+    nameInSentence: string
+    id: string
+    idAt: string
+  }
+}
 
 export default function CitationGenerator() {
-  const [user, setUser] = useState<any>(null)
   const [projects, setProjects] = useState<Project[]>([])
   const [currentProject, setCurrentProject] = useState<Project | null>(null)
-  const [citations, setCitations] = useState<Citation[]>([])
   const [citationType, setCitationType] = useState("case")
   const [details, setDetails] = useState({})
   const [fullCitation, setFullCitation] = useState("")
-  const [shortCitations, setShortCitations] = useState<Citation["short"]>({
+  const [shortCitations, setShortCitations] = useState({
     regular: "",
     nameInSentence: "",
     id: "",
     idAt: "",
   })
-  const [isSupabaseInitialized, setIsSupabaseInitialized] = useState(true)
+  const [selectedCitation, setSelectedCitation] = useState<Citation | null>(null)
   const { toast } = useToast()
 
   useEffect(() => {
-    const loadUser = async () => {
-      if (!supabase) {
-        setIsSupabaseInitialized(false)
-        return
-      }
-      const currentUser = await getCurrentUser()
-      setUser(currentUser)
-      if (currentUser) {
-        loadProjects(currentUser.id)
-      }
+    const savedProjects = localStorage.getItem("projects")
+    if (savedProjects) {
+      setProjects(JSON.parse(savedProjects))
     }
-    loadUser()
   }, [])
 
-  const loadProjects = async (userId: string) => {
-    const { data: projectsData, error } = await getProjects(userId)
-    if (error) {
-      toast({
-        title: "Error",
-        description: "Failed to load projects",
-      })
-    } else if (projectsData) {
-      setProjects(projectsData)
-      if (projectsData.length > 0) {
-        setCurrentProject(projectsData[0])
-        loadCitations(projectsData[0].id)
-      }
-    }
-  }
-
-  const loadCitations = async (projectId: string) => {
-    const { data: citationsData, error } = await getCitations(projectId)
-    if (error) {
-      toast({
-        title: "Error",
-        description: "Failed to load citations",
-      })
-    } else if (citationsData) {
-      setCitations(citationsData)
-    }
-  }
+  useEffect(() => {
+    localStorage.setItem("projects", JSON.stringify(projects))
+  }, [projects])
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target
     setDetails((prev) => ({ ...prev, [name]: value }))
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     const { full, short } = generateCitation(citationType, details)
     setFullCitation(full)
     setShortCitations(short)
 
     if (currentProject) {
-      const newCitation: Omit<Citation, "id"> = {
-        project_id: currentProject.id,
+      const newCitation: Citation = {
+        id: selectedCitation ? selectedCitation.id : Date.now().toString(),
         type: citationType,
         details,
         full,
         short,
       }
 
-      const { data, error } = await createCitation(newCitation)
-      if (error) {
-        toast({
-          title: "Error",
-          description: "Failed to save citation",
+      if (selectedCitation) {
+        // Update existing citation
+        setProjects((prevProjects) =>
+          prevProjects.map((project) =>
+            project.id === currentProject.id
+              ? {
+                  ...project,
+                  citations: project.citations.map((c) => (c.id === selectedCitation.id ? newCitation : c)),
+                }
+              : project,
+          ),
+        )
+        setCurrentProject((prevProject) => {
+          if (prevProject) {
+            return {
+              ...prevProject,
+              citations: prevProject.citations.map((c) => (c.id === selectedCitation.id ? newCitation : c)),
+            }
+          }
+          return null
         })
-      } else if (data) {
-        setCitations((prev) => [...prev, data[0]])
         toast({
-          title: "Success",
-          description: "Citation saved",
+          title: "Citation Updated",
+          description: "Your citation has been updated in the current project.",
+        })
+      } else {
+        // Add new citation
+        setProjects((prevProjects) =>
+          prevProjects.map((project) =>
+            project.id === currentProject.id ? { ...project, citations: [...project.citations, newCitation] } : project,
+          ),
+        )
+        setCurrentProject((prevProject) => {
+          if (prevProject) {
+            return { ...prevProject, citations: [...prevProject.citations, newCitation] }
+          }
+          return null
+        })
+        toast({
+          title: "Citation Generated",
+          description: "Your citation has been generated and saved to the current project.",
         })
       }
+    } else {
+      toast({
+        title: "Citation Generated",
+        description: "Your citation has been generated. Create a project to save it.",
+      })
     }
+
+    setSelectedCitation(null)
   }
 
   const convertItalics = (text: string) => {
-    return text.replace(/\*(.*?)\*/g, "<i>$1</i>")
-  }
-
-  const copyToClipboard = (text: string) => {
-    const textArea = document.createElement("textarea")
-    textArea.innerHTML = text
-    document.body.appendChild(textArea)
-    textArea.select()
-    document.execCommand("copy")
-    document.body.removeChild(textArea)
-    toast({
-      title: "Copied to clipboard",
-      description: "The citation has been copied to your clipboard.",
+    return text.replace(/\*(.*?)\*|\b(Id\.(?:\s+at)?)\b/g, (match, p1, p2) => {
+      if (p1) {
+        return `<i>${p1}</i>`
+      } else if (p2) {
+        return `<i>${p2}</i>`
+      }
+      return match
     })
   }
 
-  const loadCitation = (citation: Citation) => {
-    setCitationType(citation.type)
-    setDetails(citation.details)
-    setFullCitation(citation.full)
-    setShortCitations(citation.short)
+  const copyToClipboard = (text: string) => {
+    const tempElement = document.createElement("div")
+    tempElement.innerHTML = convertItalics(text)
+
+    const range = document.createRange()
+    range.selectNodeContents(tempElement)
+
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+
+    document.execCommand("copy")
+    selection?.removeAllRanges()
+
+    toast({
+      title: "Copied to clipboard",
+      description: "The citation has been copied to your clipboard with proper formatting.",
+    })
   }
 
   const renderForm = () => {
@@ -204,249 +223,209 @@ export default function CitationGenerator() {
     }
   }
 
-  const handleCreateProject = async () => {
-    const projectName = prompt("Enter project name:")
-    if (projectName && user) {
-      const { data, error } = await createProject(projectName, user.id)
-      if (error) {
-        toast({
-          title: "Error",
-          description: "Failed to create project",
-        })
-      } else if (data) {
-        setProjects((prev) => [...prev, data[0]])
-        setCurrentProject(data[0])
-        setCitations([])
+  const createProject = () => {
+    const projectName = prompt("Enter a name for the new project:")
+    if (projectName) {
+      const newProject: Project = {
+        id: Date.now().toString(),
+        name: projectName,
+        citations: [],
       }
-    }
-  }
-
-  const handleProjectChange = (projectId: string) => {
-    const project = projects.find((p) => p.id === projectId)
-    if (project) {
-      setCurrentProject(project)
-      loadCitations(project.id)
-    }
-  }
-
-  const handleSignUp = async (email: string, password: string) => {
-    const { data, error } = await signUp(email, password)
-    if (error) {
+      setProjects((prevProjects) => [...prevProjects, newProject])
+      setCurrentProject(newProject)
       toast({
-        title: "Error",
-        description: "Failed to sign up",
-      })
-    } else if (data.user) {
-      setUser(data.user)
-      toast({
-        title: "Success",
-        description: "Signed up successfully",
+        title: "Project Created",
+        description: `New project "${projectName}" has been created and selected.`,
       })
     }
   }
 
-  const handleSignIn = async (email: string, password: string) => {
-    const { data, error } = await signIn(email, password)
-    if (error) {
+  const selectProject = (projectId: string) => {
+    const selected = projects.find((p) => p.id === projectId)
+    if (selected) {
+      setCurrentProject(selected)
+      setSelectedCitation(null)
+      setCitationType("case")
+      setDetails({})
+      setFullCitation("")
+      setShortCitations({ regular: "", nameInSentence: "", id: "", idAt: "" })
       toast({
-        title: "Error",
-        description: "Failed to sign in",
-      })
-    } else if (data.user) {
-      setUser(data.user)
-      loadProjects(data.user.id)
-      toast({
-        title: "Success",
-        description: "Signed in successfully",
+        title: "Project Selected",
+        description: `Project "${selected.name}" has been selected.`,
       })
     }
   }
 
-  const handleSignOut = async () => {
-    const { error } = await signOut()
-    if (error) {
-      toast({
-        title: "Error",
-        description: "Failed to sign out",
+  const deleteCitation = (citationId: string) => {
+    if (currentProject) {
+      setProjects((prevProjects) =>
+        prevProjects.map((project) =>
+          project.id === currentProject.id
+            ? { ...project, citations: project.citations.filter((c) => c.id !== citationId) }
+            : project,
+        ),
+      )
+      setCurrentProject((prevProject) => {
+        if (prevProject) {
+          return { ...prevProject, citations: prevProject.citations.filter((c) => c.id !== citationId) }
+        }
+        return null
       })
-    } else {
-      setUser(null)
-      setProjects([])
-      setCurrentProject(null)
-      setCitations([])
+      if (selectedCitation && selectedCitation.id === citationId) {
+        setSelectedCitation(null)
+        setCitationType("case")
+        setDetails({})
+        setFullCitation("")
+        setShortCitations({ regular: "", nameInSentence: "", id: "", idAt: "" })
+      }
       toast({
-        title: "Success",
-        description: "Signed out successfully",
+        title: "Citation Deleted",
+        description: "The citation has been removed from the current project.",
       })
     }
+  }
+
+  const selectCitation = (citation: Citation) => {
+    setSelectedCitation(citation)
+    setCitationType(citation.type)
+    setDetails(citation.details)
+    setFullCitation(citation.full)
+    setShortCitations(citation.short)
+    toast({
+      title: "Citation Selected",
+      description: "The citation has been loaded for editing.",
+    })
   }
 
   return (
     <div className="max-w-4xl mx-auto p-6">
-      <h1 className="text-2xl font-bold mb-6">Legal Citation Generator (Bluebook 21st Edition)</h1>
+      <div className="flex flex-col items-center mb-8">
+        <img
+          src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/BlueCite.jpg-GKOszRaLNomJ5VLGf8psjrKSezAZ8W.jpeg"
+          alt="BlueCite Logo"
+          className="w-16 h-16 mb-2"
+        />
+        <h1 className="text-2xl font-bold">BlueCite</h1>
+      </div>
 
-      {!isSupabaseInitialized && (
-        <div className="mb-6 text-red-500">
-          <p>Error: Supabase is not initialized. Please check your environment variables.</p>
+      <div className="mb-6">
+        <h2 className="text-xl font-semibold mb-2">Projects</h2>
+        <div className="flex items-center space-x-2 mb-2">
+          <Select onValueChange={selectProject}>
+            <SelectTrigger className="w-[200px]">
+              <SelectValue placeholder="Select a project" />
+            </SelectTrigger>
+            <SelectContent>
+              {projects.map((project) => (
+                <SelectItem key={project.id} value={project.id}>
+                  {project.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button onClick={createProject}>Create New Project</Button>
+        </div>
+        {currentProject && <p className="text-sm text-gray-600">Current Project: {currentProject.name}</p>}
+      </div>
+
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <Label htmlFor="citationType">Citation Type</Label>
+          <Select onValueChange={(value) => setCitationType(value)} value={citationType}>
+            <SelectTrigger>
+              <SelectValue placeholder="Select citation type" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="reportedCase">Reported Case</SelectItem>
+              <SelectItem value="unreportedCase">Unreported Case</SelectItem>
+              <SelectItem value="pendingCase">Pending Case</SelectItem>
+              <SelectItem value="constitution">Constitution</SelectItem>
+              <SelectItem value="statute">Statute</SelectItem>
+              <SelectItem value="regulation">Regulation</SelectItem>
+              <SelectItem value="legislativeMaterial">Legislative Material</SelectItem>
+              <SelectItem value="letter">Letter</SelectItem>
+              <SelectItem value="interview">Interview</SelectItem>
+              <SelectItem value="treaty">Treaty</SelectItem>
+              <SelectItem value="book">Book</SelectItem>
+              <SelectItem value="workInCollection">Work in Collection</SelectItem>
+              <SelectItem value="journal">Journal Article</SelectItem>
+              <SelectItem value="newspaper">Newspaper</SelectItem>
+              <SelectItem value="forthcomingPublication">Forthcoming Publication</SelectItem>
+              <SelectItem value="internetSource">Internet Source</SelectItem>
+              <SelectItem value="courtDocument">Court Document</SelectItem>
+              <SelectItem value="rule">Rule</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        {renderForm()}
+        <Button type="submit">{selectedCitation ? "Update Citation" : "Generate Citation"}</Button>
+      </form>
+
+      {fullCitation && (
+        <div className="mt-6">
+          <h2 className="text-xl font-semibold mb-2">Full Citation</h2>
+          <div dangerouslySetInnerHTML={{ __html: convertItalics(fullCitation) }} className="mb-2 p-2 border rounded" />
+          <Button onClick={() => copyToClipboard(fullCitation)}>Copy Full Citation</Button>
         </div>
       )}
 
-      {isSupabaseInitialized && (
-        <>
-          {!user ? (
-            <div className="mb-6">
-              <h2 className="text-xl font-semibold mb-2">Sign In / Sign Up</h2>
-              <Input type="email" placeholder="Email" className="mb-2" id="email" />
-              <Input type="password" placeholder="Password" className="mb-2" id="password" />
-              <Button
-                onClick={() =>
-                  handleSignIn(
-                    (document.getElementById("email") as HTMLInputElement).value,
-                    (document.getElementById("password") as HTMLInputElement).value,
-                  )
-                }
-                className="mr-2"
-              >
-                Sign In
-              </Button>
-              <Button
-                onClick={() =>
-                  handleSignUp(
-                    (document.getElementById("email") as HTMLInputElement).value,
-                    (document.getElementById("password") as HTMLInputElement).value,
-                  )
-                }
-              >
-                Sign Up
-              </Button>
+      {shortCitations.regular && (
+        <div className="mt-6">
+          <h2 className="text-xl font-semibold mb-2">Short Citations</h2>
+          <div className="space-y-2">
+            <div>
+              <Label>Regular</Label>
+              <div
+                dangerouslySetInnerHTML={{ __html: convertItalics(shortCitations.regular) }}
+                className="mb-2 p-2 border rounded"
+              />
+              <Button onClick={() => copyToClipboard(shortCitations.regular)}>Copy</Button>
             </div>
-          ) : (
-            <div className="mb-6">
-              <p>Signed in as {user.email}</p>
-              <Button onClick={handleSignOut}>Sign Out</Button>
+            <div>
+              <Label>Name in Sentence</Label>
+              <div
+                dangerouslySetInnerHTML={{ __html: convertItalics(shortCitations.nameInSentence) }}
+                className="mb-2 p-2 border rounded"
+              />
+              <Button onClick={() => copyToClipboard(shortCitations.nameInSentence)}>Copy</Button>
             </div>
-          )}
+            <div>
+              <Label>Id.</Label>
+              <div
+                dangerouslySetInnerHTML={{ __html: convertItalics(shortCitations.id) }}
+                className="mb-2 p-2 border rounded"
+              />
+              <Button onClick={() => copyToClipboard(shortCitations.id)}>Copy</Button>
+            </div>
+            <div>
+              <Label>Id. at</Label>
+              <div
+                dangerouslySetInnerHTML={{ __html: convertItalics(shortCitations.idAt) }}
+                className="mb-2 p-2 border rounded"
+              />
+              <Button onClick={() => copyToClipboard(shortCitations.idAt)}>Copy</Button>
+            </div>
+          </div>
+        </div>
+      )}
 
-          {user && (
-            <>
-              <div className="mb-6">
-                <h2 className="text-xl font-semibold mb-2">Projects</h2>
-                <Select onValueChange={handleProjectChange}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select project" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {projects.map((project) => (
-                      <SelectItem key={project.id} value={project.id}>
-                        {project.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Button onClick={handleCreateProject} className="mt-2">
-                  Create New Project
+      {currentProject && currentProject.citations.length > 0 && (
+        <div className="mt-6">
+          <h2 className="text-xl font-semibold mb-2">Project Citations</h2>
+          {currentProject.citations.map((citation) => (
+            <div key={citation.id} className="mb-2 p-2 border rounded">
+              <div dangerouslySetInnerHTML={{ __html: convertItalics(citation.full) }} />
+              <div className="mt-2 space-x-2">
+                <Button onClick={() => selectCitation(citation)}>Edit</Button>
+                <Button onClick={() => copyToClipboard(citation.full)}>Copy Full</Button>
+                <Button onClick={() => copyToClipboard(citation.short.regular)}>Copy Short</Button>
+                <Button onClick={() => deleteCitation(citation.id)} variant="destructive">
+                  Delete
                 </Button>
               </div>
-
-              {currentProject && (
-                <form onSubmit={handleSubmit} className="space-y-4">
-                  <div>
-                    <Label htmlFor="citationType">Citation Type</Label>
-                    <Select onValueChange={(value) => setCitationType(value)}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select citation type" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="reportedCase">Reported Case</SelectItem>
-                        <SelectItem value="unreportedCase">Unreported Case</SelectItem>
-                        <SelectItem value="pendingCase">Pending Case</SelectItem>
-                        <SelectItem value="constitution">Constitution</SelectItem>
-                        <SelectItem value="statute">Statute</SelectItem>
-                        <SelectItem value="regulation">Regulation</SelectItem>
-                        <SelectItem value="legislativeMaterial">Legislative Material</SelectItem>
-                        <SelectItem value="letter">Letter</SelectItem>
-                        <SelectItem value="interview">Interview</SelectItem>
-                        <SelectItem value="treaty">Treaty</SelectItem>
-                        <SelectItem value="book">Book</SelectItem>
-                        <SelectItem value="workInCollection">Work in Collection</SelectItem>
-                        <SelectItem value="journal">Journal Article</SelectItem>
-                        <SelectItem value="newspaper">Newspaper</SelectItem>
-                        <SelectItem value="forthcomingPublication">Forthcoming Publication</SelectItem>
-                        <SelectItem value="internetSource">Internet Source</SelectItem>
-                        <SelectItem value="courtDocument">Court Document</SelectItem>
-                        <SelectItem value="rule">Rule</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  {renderForm()}
-                  <Button type="submit">Generate Citation</Button>
-                </form>
-              )}
-
-              {fullCitation && (
-                <div className="mt-6">
-                  <h2 className="text-xl font-semibold mb-2">Full Citation</h2>
-                  <div
-                    dangerouslySetInnerHTML={{ __html: convertItalics(fullCitation) }}
-                    className="mb-2 p-2 border rounded"
-                  />
-                  <Button onClick={() => copyToClipboard(fullCitation)}>Copy Full Citation</Button>
-                </div>
-              )}
-
-              {shortCitations.regular && (
-                <div className="mt-6">
-                  <h2 className="text-xl font-semibold mb-2">Short Citations</h2>
-                  <div className="space-y-2">
-                    <div>
-                      <Label>Regular</Label>
-                      <div
-                        dangerouslySetInnerHTML={{ __html: convertItalics(shortCitations.regular) }}
-                        className="mb-2 p-2 border rounded"
-                      />
-                      <Button onClick={() => copyToClipboard(shortCitations.regular)}>Copy</Button>
-                    </div>
-                    <div>
-                      <Label>Name in Sentence</Label>
-                      <div
-                        dangerouslySetInnerHTML={{ __html: convertItalics(shortCitations.nameInSentence) }}
-                        className="mb-2 p-2 border rounded"
-                      />
-                      <Button onClick={() => copyToClipboard(shortCitations.nameInSentence)}>Copy</Button>
-                    </div>
-                    <div>
-                      <Label>Id.</Label>
-                      <div
-                        dangerouslySetInnerHTML={{ __html: convertItalics(shortCitations.id) }}
-                        className="mb-2 p-2 border rounded"
-                      />
-                      <Button onClick={() => copyToClipboard(shortCitations.id)}>Copy</Button>
-                    </div>
-                    <div>
-                      <Label>Id. at</Label>
-                      <div
-                        dangerouslySetInnerHTML={{ __html: convertItalics(shortCitations.idAt) }}
-                        className="mb-2 p-2 border rounded"
-                      />
-                      <Button onClick={() => copyToClipboard(shortCitations.idAt)}>Copy</Button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {currentProject && (
-                <div className="mt-6">
-                  <h2 className="text-xl font-semibold mb-2">Project Citations</h2>
-                  {citations.map((citation) => (
-                    <div key={citation.id} className="mb-2">
-                      <Button onClick={() => loadCitation(citation)}>{citation.full}</Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-        </>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   )
